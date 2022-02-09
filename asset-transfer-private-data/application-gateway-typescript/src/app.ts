@@ -7,19 +7,8 @@
 import { connect, Contract } from '@hyperledger/fabric-gateway';
 import { TextDecoder } from 'util';
 import {
-    newGrpcConnection,
-    newIdentity,
-    newSigner,
-    tlsCertPathOrg1,
-    peerEndpointOrg1,
-    peerNameOrg1,
-    certPathOrg1,
-    keyDirectoryPathOrg1,
-    tlsCertPathOrg2,
-    peerEndpointOrg2,
-    peerNameOrg2,
-    certPathOrg2,
-    keyDirectoryPathOrg2,
+    certPathOrg1, certPathOrg2, keyDirectoryPathOrg1, keyDirectoryPathOrg2, newGrpcConnection, newIdentity,
+    newSigner, peerEndpointOrg1, peerEndpointOrg2, peerNameOrg1, peerNameOrg2, tlsCertPathOrg1, tlsCertPathOrg2
 } from './connect';
 
 const channelName = 'mychannel';
@@ -29,20 +18,19 @@ const mspIdOrg2 = 'Org2MSP';
 
 const utf8Decoder = new TextDecoder();
 
-//Collection Names
+// Collection Names
 const org1PrivateCollectionName = 'Org1MSPPrivateCollection';
 const org2PrivateCollectionName = 'Org2MSPPrivateCollection';
 
 const RED = '\x1b[31m\n';
 const RESET = '\x1b[0m';
 
-//Use a random key so that we can run multiple times
+// Use a unique key so that we can run multiple times
 const now = Date.now();
 const assetID1 = `asset${now}`;
 const assetID2 = `asset${now + 1}`;
 
 async function main(): Promise<void> {
-    // The gRPC client connection from org1 should be shared by all Gateway connections to this endpoint.
     const clientOrg1 = await newGrpcConnection(
         tlsCertPathOrg1,
         peerEndpointOrg1,
@@ -55,7 +43,6 @@ async function main(): Promise<void> {
         signer: await newSigner(keyDirectoryPathOrg1),
     });
 
-    // The gRPC client connection from org2 should be shared by all Gateway connections to this endpoint.
     const clientOrg2 = await newGrpcConnection(
         tlsCertPathOrg2,
         peerEndpointOrg2,
@@ -69,12 +56,12 @@ async function main(): Promise<void> {
     });
 
     try {
-    // Get the smart contract from the network.
+        // Get the smart contract as an Org1 client.
         const contractOrg1 = gatewayOrg1
             .getNetwork(channelName)
             .getContract(chaincodeName);
 
-        // Get the smart contract from the network.
+        // Get the smart contract as an Org2 client.
         const contractOrg2 = gatewayOrg2
             .getNetwork(channelName)
             .getContract(chaincodeName);
@@ -84,62 +71,63 @@ async function main(): Promise<void> {
         // Create new assets on the ledger.
         await createAssets(contractOrg1);
 
-        //Read asset from the org1's private data collection with ID in the given range.
+        // Read asset from the Org1's private data collection with ID in the given range.
         await getAssetsByRange(contractOrg1);
 
-        try{
-            //Attempt to transfer asset without prior aprroval from org2, transaction expected to fail.
-            console.log('\n--> Attempt Transaction: TransferAsset Without AgreeToTransfer ' + assetID1
-            );
-            await transferAsset(contractOrg1);
-        }
-        catch(e){
-            console.log('Expected to fail:')
-            console.log(`Successfully caught the error: \n    ${e}`);
+        try {
+            // Attempt to transfer asset without prior approval from Org2, transaction expected to fail.
+            console.log('\nAttempt TransferAsset without prior AgreeToTransfer');
+            await transferAsset(contractOrg1, assetID1);
+            doFail('TransferAsset transaction succeeded when it was expected to fail');
+        } catch (e) {
+            console.log(`*** Received expected error: ${e}`);
         }
 
         console.log('\n~~~~~~~~~~~~~~~~ As Org2 Client ~~~~~~~~~~~~~~~~');
 
-        //Read the asset by ID.
-        await readAssetByID(contractOrg2);
+        // Read the asset by ID.
+        await readAssetByID(contractOrg2, assetID1);
 
-        //Make agreement to transfer the asset from org1 to org2.
-        await agreeToTransfer(contractOrg2);
+        // Make agreement to transfer the asset from Org1 to Org2.
+        await agreeToTransfer(contractOrg2, assetID1);
 
         console.log('\n~~~~~~~~~~~~~~~~ As Org1 Client ~~~~~~~~~~~~~~~~');
 
-        //Read transfer agreement.
-        await readTransferAgreement(contractOrg1);
+        // Read transfer agreement.
+        await readTransferAgreement(contractOrg1, assetID1);
 
-        // Tranfer asset to org2.
-        await transferAsset(contractOrg1);
+        // Transfer asset to Org2.
+        await transferAsset(contractOrg1, assetID1);
 
-        //Again ReadAsset : results will show that the buyer identity now owns the asset.
-        await readAssetByID(contractOrg1);
+        // Again ReadAsset : results will show that the buyer identity now owns the asset.
+        await readAssetByID(contractOrg1, assetID1);
 
-        //Confirm that transfer removed the private details from the Org1 collection.
-        await checkPrivateDataIsRemoved(contractOrg1);
+        // Confirm that transfer removed the private details from the Org1 collection.
+        const org1ReadSuccess = await readAssetPrivateDetails(contractOrg1, assetID1, org1PrivateCollectionName);
+        if (org1ReadSuccess) {
+            doFail(`Asset private data still exists in ${org1PrivateCollectionName}`);
+        }
 
         console.log('\n~~~~~~~~~~~~~~~~ As Org2 Client ~~~~~~~~~~~~~~~~');
 
-        try{
-            //Non-owner Org2 should not be able to delete assetID2. Expect an error from DeleteAsset.
-            await deleteAsset(contractOrg2);
+        // Org2 can read asset private details: Org2 is owner, and private details exist in new owner's Collection
+        const org2ReadSuccess = await readAssetPrivateDetails(contractOrg2, assetID1, org2PrivateCollectionName);
+        if (!org2ReadSuccess) {
+            doFail(`Asset private data not found in ${org2PrivateCollectionName}`);
+        }
+
+        try {
+            console.log('\nAttempt DeleteAsset using non-owner organization');
+            await deleteAsset(contractOrg2, assetID2);
+            doFail('DeleteAsset transaction succeeded when it was expected to fail');
         } catch (e) {
-            console.log('Expected to fail')
-            console.log(`Successfully caught the error: \n    ${e}`);
+            console.log(`*** Received expected error: ${e}`);
         }
 
         console.log('\n~~~~~~~~~~~~~~~~ As Org1 Client ~~~~~~~~~~~~~~~~');
 
         // Delete AssetID2 as Org1.
-        console.log('--> Submit Transaction: DeleteAsset as Org1, ID: ' + assetID2);
-        await deleteAsset(contractOrg1);
-
-        console.log('\n~~~~~~~~~~~~~~~~ As Org2 Client ~~~~~~~~~~~~~~~~');
-
-        //Org2 can read asset private details: Org2 is owner, and private details exist in new owner's Collection
-        await readAssetPrivateDetails(contractOrg2,org2PrivateCollectionName);
+        await deleteAsset(contractOrg1, assetID2);
     } finally {
         gatewayOrg1.close();
         clientOrg1.close();
@@ -160,6 +148,8 @@ main().catch((error) => {
 async function createAssets(contract: Contract): Promise<void> {
     const assetType = 'ValuableAsset';
 
+    console.log(`\n--> Submit Transaction: CreateAsset, ID: ${assetID1}`);
+
     const asset1Data = {
         objectType: assetType,
         assetID: assetID1,
@@ -167,19 +157,12 @@ async function createAssets(contract: Contract): Promise<void> {
         size: 20,
         appraisedValue: 100,
     };
-
-    console.log(
-        'Adding Assets to work with:\n--> Submit Transaction: CreateAsset ' +
-      assetID1
-    );
-
     await contract.submit('CreateAsset', {
         transientData: { asset_properties: JSON.stringify(asset1Data) },
     });
-    console.log(
-        'Adding Assets to work with:\n--> Submit Transaction: CreateAsset ' +
-      assetID2
-    );
+
+    console.log('*** Transaction committed successfully');
+    console.log(`\n--> Submit Transaction: CreateAsset, ID: ${assetID2}`);
 
     const asset2Data = {
         objectType: assetType,
@@ -188,7 +171,6 @@ async function createAssets(contract: Contract): Promise<void> {
         size: 35,
         appraisedValue: 727,
     };
-
     await contract.submit('CreateAsset', {
         transientData: { asset_properties: JSON.stringify(asset2Data) },
     });
@@ -198,10 +180,8 @@ async function createAssets(contract: Contract): Promise<void> {
 
 async function getAssetsByRange(contract: Contract): Promise<void> {
     // GetAssetByRange returns assets on the ledger with ID in the range of startKey (inclusive) and endKey (exclusive).
-    console.log(
-        '\n--> Evaluate Transaction: ReadAssetPrivateDetails from ' +
-      org1PrivateCollectionName
-    );
+    console.log(`\n--> Evaluate Transaction: ReadAssetPrivateDetails from ${org1PrivateCollectionName}`);
+
     const resultBytes = await contract.evaluateTransaction(
         'GetAssetByRange',
         assetID1,
@@ -209,16 +189,16 @@ async function getAssetsByRange(contract: Contract): Promise<void> {
     );
 
     const resultString = utf8Decoder.decode(resultBytes);
-    if (resultString.length === 0) {
+    if (!resultString) {
         doFail('Received empty query list for readAssetPrivateDetailsOrg1');
     }
     const result = JSON.parse(resultString);
     console.log('*** Result:', result);
 }
 
-async function readAssetByID(contract: Contract): Promise<void> {
-    console.log('\n--> Evaluate Transaction: ReadAsset ' + assetID1);
-    const resultBytes = await contract.evaluateTransaction('ReadAsset', assetID1);
+async function readAssetByID(contract: Contract, assetID: string): Promise<void> {
+    console.log(`\n--> Evaluate Transaction: ReadAsset, ID: ${assetID}`);
+    const resultBytes = await contract.evaluateTransaction('ReadAsset', assetID);
 
     const resultString = utf8Decoder.decode(resultBytes);
     if (resultString.length === 0) {
@@ -228,15 +208,12 @@ async function readAssetByID(contract: Contract): Promise<void> {
     console.log('*** Result:', result);
 }
 
-async function agreeToTransfer(contract: Contract): Promise<void> {
-    // Buyer from Org2 agrees to buy the asset assetID1 //
+async function agreeToTransfer(contract: Contract, assetID: string): Promise<void> {
+    // Buyer from Org2 agrees to buy the asset//
     // To purchase the asset, the buyer needs to agree to the same value as the asset owner
 
-    const dataForAgreement = { assetID: assetID1, appraisedValue: 100 };
-    console.log(
-        '\n--> Submit Transaction: AgreeToTransfer payload ' +
-      JSON.stringify(dataForAgreement)
-    );
+    const dataForAgreement = { assetID, appraisedValue: 100 };
+    console.log('\n--> Submit Transaction: AgreeToTransfer, payload:', dataForAgreement);
 
     await contract.submit('AgreeToTransfer', {
         transientData: { asset_value: JSON.stringify(dataForAgreement) },
@@ -245,26 +222,26 @@ async function agreeToTransfer(contract: Contract): Promise<void> {
     console.log('*** Transaction committed successfully');
 }
 
-async function readTransferAgreement(contract: Contract): Promise<void> {
-    console.log('\n--> Evaluate Transaction: ReadTransferAgreement ' + assetID1);
+async function readTransferAgreement(contract: Contract, assetID: string): Promise<void> {
+    console.log(`\n--> Evaluate Transaction: ReadTransferAgreement, ID: ${assetID}`);
 
     const resultBytes = await contract.evaluateTransaction(
         'ReadTransferAgreement',
-        assetID1
+        assetID
     );
 
     const resultString = utf8Decoder.decode(resultBytes);
-    if (resultString.length === 0) {
-        doFail('Received empty result for ReadTransferAgreement');
+    if (!resultString) {
+        doFail('Received no result for ReadTransferAgreement');
     }
     const result = JSON.parse(resultString);
     console.log('*** Result:', result);
 }
 
-async function transferAsset(contract: Contract): Promise<void> {
-    console.log('\n--> Submit Transaction: TransferAsset ' + assetID1);
+async function transferAsset(contract: Contract, assetID: string): Promise<void> {
+    console.log(`\n--> Submit Transaction: TransferAsset, ID: ${assetID}`);
 
-    const buyerDetails = { assetID: assetID1, buyerMSP: mspIdOrg2 };
+    const buyerDetails = { assetID, buyerMSP: mspIdOrg2 };
     await contract.submit('TransferAsset', {
         transientData: { asset_owner: JSON.stringify(buyerDetails) },
     });
@@ -272,47 +249,34 @@ async function transferAsset(contract: Contract): Promise<void> {
     console.log('*** Transaction committed successfully');
 }
 
-async function checkPrivateDataIsRemoved(contract: Contract): Promise<void> {
-    // ReadAssetPrivateDetails reads data from Org's private collection: Should return empty
-    const resultBytes = await contract.evaluateTransaction(
-        'ReadAssetPrivateDetails',
-        org1PrivateCollectionName,
-        assetID1
-    );
+async function deleteAsset(contract: Contract, assetID: string): Promise<void> {
+    console.log('\n--> Submit Transaction: DeleteAsset, ID:', assetID);
 
-    const resultString = utf8Decoder.decode(resultBytes);
-    if (resultString.length > 0) {
-        doFail('Expected empty data from ReadAssetPrivateDetails');
-    }
-}
-
-async function deleteAsset(contract: Contract): Promise<void> {
-    const dataForDelete = { assetID: assetID2 };
-    console.log('--> Submit Transaction: DeleteAsset, ID: ' + assetID2);
+    const dataForDelete = { assetID };
     await contract.submit('DeleteAsset', {
         transientData: { asset_delete: JSON.stringify(dataForDelete) },
     });
 
     console.log('*** Transaction committed successfully');
 }
-async function readAssetPrivateDetails(contract: Contract,collection:string): Promise<void> {
-    // ReadAssetPrivateDetails reads data from Org2's private collection. Args: collectionName, assetID.
-    console.log(
-        '\n--> Evaluate Transaction: ReadAssetPrivateDetails from ' +
-        collection
-    );
+async function readAssetPrivateDetails(contract: Contract, assetID: string, collectionName: string): Promise<boolean> {
+    console.log(`\n--> Evaluate Transaction: ReadAssetPrivateDetails from ${collectionName}, ID: ${assetID}`);
+
     const resultBytes = await contract.evaluateTransaction(
         'ReadAssetPrivateDetails',
-        collection,
-        assetID1
+        collectionName,
+        assetID
     );
 
-    const resultString = utf8Decoder.decode(resultBytes);
-    if (resultString.length === 0) {
-        doFail('Received empty query list for readAssetPrivateDetailsOrg2');
+    const resultJson = utf8Decoder.decode(resultBytes);
+    if (!resultJson) {
+        console.log('*** No result');
+        return false;
     }
-    const result = JSON.parse(resultString);
+    
+    const result = JSON.parse(resultJson);
     console.log('*** Result:', result);
+    return true;
 }
 
 export function doFail(msgString: string): never {
