@@ -20,9 +20,11 @@ import (
 	"github.com/hyperledger/fabric-gateway/pkg/client"
 	"github.com/hyperledger/fabric-gateway/pkg/identity"
 	"github.com/hyperledger/fabric-protos-go-apiv2/gateway"
+	"github.com/hyperledger/fabric-protos-go-apiv2/peer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -80,7 +82,8 @@ func main() {
 	getAllAssets(contract)
 	createAsset(contract)
 	readAssetByID(contract)
-	transferAssetAsync(contract)
+	transactionId := transferAssetAsync(contract)
+	getTransaction(network, transactionId)
 	exampleErrorHandling(contract)
 }
 
@@ -204,7 +207,7 @@ func readAssetByID(contract *client.Contract) {
 
 // Submit transaction asynchronously, blocking until the transaction has been sent to the orderer, and allowing
 // this thread to process the chaincode response (e.g. update a UI) without waiting for the commit notification
-func transferAssetAsync(contract *client.Contract) {
+func transferAssetAsync(contract *client.Contract) string {
 	fmt.Printf("\n--> Async Submit Transaction: TransferAsset, updates existing asset owner")
 
 	submitResult, commit, err := contract.SubmitAsync("TransferAsset", client.WithArguments(assetId, "Mark"))
@@ -222,6 +225,23 @@ func transferAssetAsync(contract *client.Contract) {
 	}
 
 	fmt.Printf("*** Transaction committed successfully\n")
+
+	return commit.TransactionID()
+}
+
+func getTransaction(network *client.Network, transactionId string) {
+	fmt.Println("\n--> Evaluate Transaction: GetAllAssets, function returns all the current assets on the ledger")
+
+	evaluateResult, err := network.GetContract("qscc").EvaluateTransaction("GetTransactionByID", network.Name(), transactionId)
+	if err != nil {
+		panic(fmt.Errorf("failed to evaluate transaction: %w", err))
+	}
+	result := new(peer.ProcessedTransaction)
+	if err := proto.Unmarshal(evaluateResult, result); err != nil {
+		panic(fmt.Errorf("failed to unmarshal transaction: %w", err))
+	}
+
+	fmt.Printf("*** Result:%s\n", result.String())
 }
 
 // Submit transaction, passing in the wrong number of arguments ,expected to throw an error containing details of any error responses from the smart contract.
